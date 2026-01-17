@@ -19,93 +19,98 @@ def determiner_rayon(ingredient):
     return "📦 Autre"
 
 def extraire_recette(url, nb_pers_voulu):
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows'})
+    # Ajout de headers pour simuler un vrai navigateur
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    scraper = cloudscraper.create_scraper()
     try:
-        res = scraper.get(url, timeout=10)
+        res = scraper.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
         ingredients = []
-        titre = "Recette Inconnue"
-
+        
+        # --- LOGIQUE MARMITON ---
         if "marmiton.org" in url:
-            titre = soup.find('h1').text.strip()
+            titre = soup.find('h1').get_text().strip()
             tag_nb_orig = soup.select_one('.recipe-ingredients__qt-counter-value')
             nb_orig = int(re.sub(r'\D', '', tag_nb_orig.text)) if tag_nb_orig else 4
             ratio = nb_pers_voulu / nb_orig
-            for item in soup.select('.recipe-ingredients__list__item'):
+            
+            items = soup.select('.recipe-ingredients__list__item')
+            for item in items:
                 name = item.select_one('.ingredient-name').text.strip()
-                qty_tag, unit_tag = item.select_one('.count'), item.select_one('.unit')
+                qty_tag = item.select_one('.count')
+                unit_tag = item.select_one('.unit')
                 unit = unit_tag.text.strip() if unit_tag else ""
+                
                 qty_val = ""
                 if qty_tag and qty_tag.text.strip():
                     try:
                         val = float(qty_tag.text.strip().replace(',', '.')) * ratio
                         qty_val = int(val) if val.is_integer() else round(val, 1)
                     except: qty_val = qty_tag.text.strip()
+                
                 ingredients.append(f"{qty_val} {unit} {name}".strip())
+            return {"titre": titre, "ingredients": ingredients}
 
+        # --- LOGIQUE 750G ---
         elif "750g.com" in url:
-            titre = soup.find('h1').text.strip()
+            titre = soup.find('h1').get_text().strip()
             items = soup.select('.c-recipe-ingredients__list-item') or soup.select('.recipe-ingredients li')
             for item in items:
                 ingredients.append(" ".join(item.get_text().split()))
-        
-        return {"titre": titre, "ingredients": ingredients}
-    except: return None
+            return {"titre": titre, "ingredients": ingredients}
+            
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction : {e}")
+        return None
 
-# --- INTERFACE STREAMLIT ---
-st.set_page_config(page_title="Mes Courses Web", page_icon="🛒")
-st.title("🛒 Planning & Courses")
-
-# Initialisation du stockage de la semaine
+# --- INITIALISATION DE LA MÉMOIRE (Session State) ---
 if 'planning' not in st.session_state:
     st.session_state.planning = []
 
-# --- BARRE LATÉRALE : AJOUT ---
-with st.sidebar:
-    st.header("➕ Ajouter une recette")
-    url_input = st.text_input("Lien Marmiton ou 750g")
-    nb_pers = st.number_input("Nombre de personnes", min_value=1, value=4)
-    
-    if st.button("Ajouter au planning"):
+# --- INTERFACE ---
+st.title("🛒 Mon Assistant Courses Web")
+
+# Zone d'ajout
+with st.expander("➕ Ajouter une recette au planning", expanded=True):
+    col_link, col_p = st.columns([0.8, 0.2])
+    url_input = col_link.text_input("Lien de la recette")
+    nb_pers = col_p.number_input("Pers.", min_value=1, value=4)
+    if st.button("Ajouter à la semaine"):
         if url_input:
-            with st.spinner("Analyse..."):
-                data = extraire_recette(url_input, nb_pers)
-                if data:
-                    st.session_state.planning.append(data)
-                    st.success(f"Ajouté : {data['titre']}")
-                else:
-                    st.error("Impossible de lire cette recette.")
+            data = extraire_recette(url_input, nb_pers)
+            if data and data["ingredients"]:
+                st.session_state.planning.append(data)
+                st.success(f"Recette '{data['titre']}' ajoutée !")
+            else:
+                st.warning("Aucun ingrédient trouvé. Vérifie le lien.")
 
-# --- AFFICHAGE PRINCIPAL ---
-tab1, tab2 = st.tabs(["📅 Mon Planning", "🛍️ Ma Liste de Courses"])
-
-with tab1:
-    if not st.session_state.planning:
-        st.info("Votre planning est vide. Ajoutez des recettes via la barre latérale.")
-    else:
-        for i, recette in enumerate(st.session_state.planning):
-            col1, col2 = st.columns([0.8, 0.2])
-            col1.write(f"**{recette['titre']}**")
-            if col2.button("🗑️", key=f"del_{i}"):
+# --- AFFICHAGE ---
+if st.session_state.planning:
+    tab1, tab2 = st.tabs(["📅 Planning", "🛍️ Liste de Courses"])
+    
+    with tab1:
+        for i, rec in enumerate(st.session_state.planning):
+            c1, c2 = st.columns([0.9, 0.1])
+            c1.write(f"🍴 {rec['titre']}")
+            if c2.button("❌", key=f"del_{i}"):
                 st.session_state.planning.pop(i)
                 st.rerun()
-
-with tab2:
-    if not st.session_state.planning:
-        st.write("Rien à acheter pour l'instant.")
-    else:
-        # Regroupement et dédoublonnage
+                
+    with tab2:
+        # Tri par rayons
         par_rayon = {r: set() for r in RAYONS.keys()}
-        for recette in st.session_state.planning:
-            for ing in recette["ingredients"]:
+        for rec in st.session_state.planning:
+            for ing in rec["ingredients"]:
                 par_rayon[determiner_rayon(ing)].add(ing)
         
         for rayon, items in par_rayon.items():
             if items:
-                st.subheader(rayon)
+                st.markdown(f"#### {rayon}")
                 for it in sorted(items):
-                    st.checkbox(it, key=f"check_{it}")
-
-if st.button("Reset tout le planning"):
-    st.session_state.planning = []
-    st.rerun()
+                    st.checkbox(it, key=f"shop_{it}")
+        
+        if st.button("Tout effacer"):
+            st.session_state.planning = []
+            st.rerun()
+else:
+    st.info("Colle un lien ci-dessus pour commencer ta liste !")
