@@ -2,81 +2,59 @@ import streamlit as st
 import cloudscraper
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="Marmiton Liste", page_icon="🛒")
+st.set_page_config(page_title="Marmiton Fix", page_icon="🛒")
 
 def extraire_recette(url, nb_pers_voulu):
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows'})
+    # On simule un vrai navigateur très précisément
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
+    
+    # On crée le scraper avec ces paramètres
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+    
     try:
-        response = scraper.get(url, timeout=10)
+        # On force l'envoi des headers
+        response = scraper.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return None
+
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 1. Trouver le nombre de personnes original sur la page
-        # Marmiton utilise cette classe pour le compteur
+        # --- TEST 1 : Nombre de personnes ---
         tag_nb_orig = soup.select_one('.recipe-ingredients__qt-counter-value')
-        nb_orig = int(tag_nb_orig.text.strip()) if tag_nb_orig else 4
+        nb_orig = 4
+        if tag_nb_orig:
+            try:
+                nb_orig = int(''.join(filter(str.isdigit, tag_nb_orig.text)))
+            except: pass
         
-        # Calcul du coefficient multiplicateur
         ratio = nb_pers_voulu / nb_orig
 
-        # 2. Extraire les ingrédients un par un
+        # --- TEST 2 : Ingrédients (Sélecteurs larges) ---
         ingredients_finaux = []
-        items = soup.select('.recipe-ingredients__list__item')
+        # Marmiton change souvent ses classes, on teste les deux principales
+        items = soup.select('.recipe-ingredients__list__item') or soup.select('.card-ingredient')
         
         for item in items:
+            name_tag = item.select_one('.ingredient-name') or item.select_one('.name')
             qty_tag = item.select_one('.count')
             unit_tag = item.select_one('.unit')
-            name_tag = item.select_one('.ingredient-name')
             
             if name_tag:
                 name = name_tag.text.strip()
                 unit = unit_tag.text.strip() if unit_tag else ""
                 
-                # Calcul de la nouvelle quantité
                 try:
                     qty_val = qty_tag.text.strip().replace(',', '.') if qty_tag else ""
                     if qty_val:
-                        nouvelle_qty = float(qty_val) * ratio
-                        # On arrondi à 1 chiffre après la virgule pour plus de lisibilité
-                        qty_affiche = int(nouvelle_qty) if nouvelle_qty.is_integer() else round(nouvelle_qty, 1)
+                        valeur = float(qty_val) * ratio
+                        qty_affiche = int(valeur) if valeur.is_integer() else round(valeur, 1)
                     else:
                         qty_affiche = ""
                 except:
-                    qty_affiche = qty_tag.text.strip() if qty_tag else ""
+                    qty_affiche = ""
 
-                ingredients_finaux.append(f"{qty_affiche} {unit} {name}".strip())
-        
-        return ingredients_finaux
-    except Exception as e:
-        return []
-
-# --- INTERFACE SIMPLE ---
-st.title("🛒 Liste de Courses Marmiton")
-
-# Choix du nombre de personnes
-nb_pers = st.number_input("Pour combien de personnes ?", min_value=1, value=4, step=1)
-
-# Saisie des liens
-liens_input = st.text_area("Collez vos liens Marmiton (un par ligne) :", height=150)
-
-if st.button("Générer la liste"):
-    urls = [u.strip() for u in liens_input.split('\n') if u.strip()]
-    
-    if not urls:
-        st.warning("Veuillez coller au moins un lien.")
-    else:
-        liste_complete = []
-        for url in urls:
-            with st.spinner(f"Analyse de la recette..."):
-                ingredients = extraire_recette(url, nb_pers)
-                liste_complete.extend(ingredients)
-        
-        if liste_complete:
-            st.write(f"### Ma liste pour {nb_pers} personnes :")
-            # Tri par ordre alphabétique pour regrouper les ingrédients
-            liste_complete.sort()
-            
-            # Affichage avec cases à cocher pour le magasin
-            for i, ing in enumerate(liste_complete):
-                st.checkbox(ing, key=f"ing_{i}")
-        else:
-            st.error("Aucun ingrédient trouvé. Vérifiez les liens ou la connexion.")
+                ingredients_finaux.append(f"{qty_affiche} {unit} {name}".
