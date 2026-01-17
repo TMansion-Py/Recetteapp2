@@ -87,3 +87,4 @@ if st.button("Générer"):
                 st.checkbox(ing, key=f"check_{i}")
         else:
             st.warning("Aucun ingrédient trouvé. Marmiton a peut-être renforcé sa sécurité.")
+
