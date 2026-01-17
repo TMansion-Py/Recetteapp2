@@ -3,13 +3,14 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import re
 from typing import Dict, List, Optional
+from fractions import Fraction
 
 # --- CONFIGURATION DES RAYONS ---
 RAYONS = {
     "🍎 Fruits & Légumes": [
         "pomme", "carotte", "oignon", "ail", "salade", "tomate", 
         "courgette", "pomme de terre", "citron", "poivron", "champignon", 
-        "herbes", "échalote", "concombre", "aubergine", "banane"
+        "herbes", "échalote", "concombre", "aubergine", "banane", "bouquet garni"
     ],
     "🧀 Crèmerie & Œufs": [
         "lait", "beurre", "oeuf", "œuf", "crème", "fromage", "yaourt", 
@@ -17,27 +18,27 @@ RAYONS = {
     ],
     "🥩 Boucherie & Poisson": [
         "poulet", "boeuf", "bœuf", "lardons", "saumon", "jambon", 
-        "crevette", "viande", "steak", "porc", "thon", "dinde", "agneau"
+        "crevette", "viande", "steak", "porc", "thon", "dinde", "agneau", "bourguignon"
     ],
     "🍝 Épicerie": [
         "farine", "sucre", "sel", "huile", "pâte", "riz", "conserve", 
         "épice", "chocolat", "levure", "moutarde", "bouillon", "sauce", 
-        "poivre", "miel", "vinaigre", "pâtes", "spaghetti"
+        "poivre", "miel", "vinaigre", "pâtes", "spaghetti", "vin", "bouteille"
     ],
     "📦 Autre": []
 }
 
-@st.cache_data(ttl=3600)
+def fraction_to_float(fraction_str: str) -> float:
+    """Convertit une fraction en nombre décimal"""
+    try:
+        return float(Fraction(fraction_str))
+    except:
+        return float(fraction_str)
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def extraire_recette(url: str, nb_pers_voulu: int) -> Optional[Dict]:
     """
     Extrait une recette depuis Marmiton ou 750g avec mise en cache.
-    
-    Args:
-        url: URL de la recette
-        nb_pers_voulu: Nombre de personnes souhaité
-        
-    Returns:
-        Dict avec titre et ingrédients ou None si échec
     """
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows'}
@@ -49,9 +50,9 @@ def extraire_recette(url: str, nb_pers_voulu: int) -> Optional[Dict]:
         soup = BeautifulSoup(res.text, 'html.parser')
         
         if "marmiton.org" in url:
-            return _extraire_marmiton(soup, nb_pers_voulu)
+            return _extraire_marmiton(soup, nb_pers_voulu, url)
         elif "750g.com" in url:
-            return _extraire_750g(soup)
+            return _extraire_750g(soup, url)
         else:
             return None
             
@@ -59,8 +60,8 @@ def extraire_recette(url: str, nb_pers_voulu: int) -> Optional[Dict]:
         st.error(f"Erreur lors de l'extraction : {str(e)}")
         return None
 
-def _extraire_marmiton(soup: BeautifulSoup, nb_pers_voulu: int) -> Dict:
-    """Extrait les données d'une recette Marmiton"""
+def _extraire_marmiton(soup: BeautifulSoup, nb_pers_voulu: int, url: str) -> Dict:
+    """Extrait les données d'une recette Marmiton avec calcul de quantités précis"""
     titre_tag = soup.find('h1')
     if not titre_tag:
         raise ValueError("Titre introuvable")
@@ -92,19 +93,34 @@ def _extraire_marmiton(soup: BeautifulSoup, nb_pers_voulu: int) -> Dict:
         qty_val = ""
         
         if qty_tag and qty_tag.text.strip():
-            qty_text = qty_tag.text.strip().replace(',', '.')
+            qty_text = qty_tag.text.strip().replace(',', '.').replace(' ', '')
             try:
-                val = float(qty_text) * ratio
-                qty_val = str(int(val)) if val.is_integer() else str(round(val, 1))
+                # Gestion des fractions et nombres
+                val = fraction_to_float(qty_text) * ratio
+                
+                # Arrondi intelligent
+                if val < 0.1:
+                    qty_val = str(round(val, 2))
+                elif val < 1:
+                    qty_val = str(round(val, 1))
+                elif val.is_integer():
+                    qty_val = str(int(val))
+                else:
+                    qty_val = str(round(val, 1))
             except ValueError:
                 qty_val = qty_tag.text.strip()
         
         ingredient = f"{qty_val} {unit} {name}".strip()
         ingredients.append(ingredient)
     
-    return {"titre": titre, "ingredients": ingredients, "url": ""}
+    return {
+        "titre": titre, 
+        "ingredients": ingredients, 
+        "url": url,
+        "nb_personnes": nb_pers_voulu
+    }
 
-def _extraire_750g(soup: BeautifulSoup) -> Dict:
+def _extraire_750g(soup: BeautifulSoup, url: str) -> Dict:
     """Extrait les données d'une recette 750g"""
     titre_tag = soup.find('h1')
     if not titre_tag:
@@ -123,7 +139,12 @@ def _extraire_750g(soup: BeautifulSoup) -> Dict:
         if ingredient:
             ingredients.append(ingredient)
     
-    return {"titre": titre, "ingredients": ingredients, "url": ""}
+    return {
+        "titre": titre, 
+        "ingredients": ingredients, 
+        "url": url,
+        "nb_personnes": 4
+    }
 
 def determiner_rayon(ingredient: str) -> str:
     """Détermine le rayon d'un ingrédient"""
@@ -137,147 +158,121 @@ def determiner_rayon(ingredient: str) -> str:
     
     return "📦 Autre"
 
-def normaliser_ingredient(ingredient: str) -> str:
-    """Normalise un ingrédient pour éviter les doublons"""
-    # Supprime les quantités au début
-    ing = re.sub(r'^\d+[\.,]?\d*\s*(g|kg|ml|cl|l|c\.à\.s|c\.à\.c)?\s*', '', ingredient.lower())
-    return ing.strip()
-
-# --- INTERFACE STREAMLIT ---
+# --- CONFIGURATION STREAMLIT ---
 st.set_page_config(
-    page_title="Mes Courses Web", 
-    page_icon="🛒",
-    layout="wide"
+    page_title="Mon Assistant Courses", 
+    page_icon="👨‍🍳",
+    layout="centered"
 )
 
-st.title("🛒 Planning & Courses")
-st.markdown("Organisez vos repas et générez votre liste de courses automatiquement !")
+# Style CSS pour thème sombre
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #1a1a1a;
+        color: #ffffff;
+    }
+    .success-box {
+        background-color: #2d5016;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+        color: #90ee90;
+    }
+    h1 {
+        color: #ffffff;
+    }
+    h2, h3 {
+        color: #e0e0e0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Initialisation du stockage
 if 'planning' not in st.session_state:
     st.session_state.planning = []
 
-# --- BARRE LATÉRALE : AJOUT ---
-with st.sidebar:
-    st.header("➕ Ajouter une recette")
-    
-    url_input = st.text_input(
-        "Lien Marmiton ou 750g",
-        placeholder="https://www.marmiton.org/...",
-        help="Collez l'URL complète de la recette"
-    )
-    
-    nb_pers = st.number_input(
-        "Nombre de personnes", 
-        min_value=1, 
-        max_value=20,
-        value=4,
-        help="Les quantités seront ajustées automatiquement"
-    )
-    
-    if st.button("➕ Ajouter au planning", type="primary", use_container_width=True):
-        if not url_input:
-            st.warning("Veuillez saisir une URL")
-        elif not ("marmiton.org" in url_input or "750g.com" in url_input):
-            st.error("Seuls Marmiton et 750g sont supportés")
-        else:
-            with st.spinner("🔍 Analyse de la recette..."):
-                data = extraire_recette(url_input, nb_pers)
-                
-                if data and data.get("ingredients"):
-                    data["url"] = url_input
-                    st.session_state.planning.append(data)
-                    st.success(f"✅ Ajouté : {data['titre']}")
-                    st.balloons()
-                else:
-                    st.error("❌ Impossible de lire cette recette. Vérifiez l'URL.")
-    
-    st.divider()
-    
-    # Statistiques
-    if st.session_state.planning:
-        st.metric("Recettes", len(st.session_state.planning))
-        total_ing = sum(len(r["ingredients"]) for r in st.session_state.planning)
-        st.metric("Ingrédients total", total_ing)
+# --- EN-TÊTE ---
+st.title("👨‍🍳 Mon Assistant Courses")
 
-# --- AFFICHAGE PRINCIPAL ---
-tab1, tab2 = st.tabs(["📅 Mon Planning", "🛍️ Ma Liste de Courses"])
+# --- FORMULAIRE D'AJOUT ---
+st.markdown("### Lien de la recette (Marmiton ou 750g)")
+url_input = st.text_input(
+    "Lien de la recette (Marmiton ou 750g)",
+    placeholder="https://www.marmiton.org/recettes/...",
+    label_visibility="collapsed"
+)
 
-with tab1:
-    if not st.session_state.planning:
-        st.info("👋 Votre planning est vide. Ajoutez des recettes via la barre latérale.")
+st.markdown("### Nombre de personnes")
+nb_pers = st.number_input(
+    "Nombre de personnes", 
+    min_value=1, 
+    max_value=20,
+    value=2,
+    label_visibility="collapsed"
+)
+
+if st.button("Ajouter à la liste", use_container_width=True):
+    if not url_input:
+        st.warning("⚠️ Veuillez saisir une URL")
+    elif not ("marmiton.org" in url_input or "750g.com" in url_input):
+        st.error("❌ Seuls Marmiton et 750g sont supportés")
     else:
+        with st.spinner("🔍 Analyse de la recette en cours..."):
+            data = extraire_recette(url_input, nb_pers)
+            
+            if data and data.get("ingredients"):
+                st.session_state.planning.append(data)
+                st.markdown(
+                    f'<div class="success-box">Ajouté : {data["titre"]}</div>',
+                    unsafe_allow_html=True
+                )
+                st.rerun()
+            else:
+                st.error("❌ Impossible de lire cette recette. Vérifiez l'URL.")
+
+st.divider()
+
+# --- ONGLETS ---
+if st.session_state.planning:
+    tab1, tab2 = st.tabs(["📋 Mes Recettes", "🛒 Liste de Courses"])
+    
+    with tab1:
         st.markdown(f"### {len(st.session_state.planning)} recette(s) au menu")
         
         for i, recette in enumerate(st.session_state.planning):
-            with st.container():
-                col1, col2, col3 = st.columns([0.7, 0.2, 0.1])
+            with st.expander(f"**{recette['titre']}** ({recette['nb_personnes']} pers.)", expanded=False):
+                st.markdown("**Ingrédients :**")
+                for ing in recette["ingredients"]:
+                    st.markdown(f"- {ing}")
                 
-                with col1:
-                    st.markdown(f"**{i+1}. {recette['titre']}**")
-                
-                with col2:
-                    with st.expander("📝 Voir ingrédients"):
-                        for ing in recette["ingredients"]:
-                            st.text(f"• {ing}")
-                
-                with col3:
-                    if st.button("🗑️", key=f"del_{i}", help="Supprimer"):
-                        st.session_state.planning.pop(i)
-                        st.rerun()
-                
-                st.divider()
-
-with tab2:
-    if not st.session_state.planning:
-        st.info("📭 Rien à acheter pour l'instant. Ajoutez des recettes à votre planning !")
-    else:
+                if st.button("🗑️ Supprimer", key=f"del_{i}"):
+                    st.session_state.planning.pop(i)
+                    st.rerun()
+    
+    with tab2:
         st.markdown("### 🛒 Votre liste de courses")
         
-        # Regroupement par rayon avec normalisation
-        par_rayon = {r: {} for r in RAYONS.keys()}
+        # Regroupement par rayon
+        par_rayon = {r: [] for r in RAYONS.keys()}
         
         for recette in st.session_state.planning:
             for ing in recette["ingredients"]:
                 rayon = determiner_rayon(ing)
-                ing_normalise = normaliser_ingredient(ing)
-                
-                # Garde la version la plus complète de l'ingrédient
-                if ing_normalise not in par_rayon[rayon]:
-                    par_rayon[rayon][ing_normalise] = ing
+                if ing not in par_rayon[rayon]:
+                    par_rayon[rayon].append(ing)
         
         # Affichage par rayon
-        for rayon, items_dict in par_rayon.items():
-            if items_dict:
-                st.subheader(rayon)
-                items_sorted = sorted(items_dict.values())
-                
-                cols = st.columns(2)
-                for idx, item in enumerate(items_sorted):
-                    with cols[idx % 2]:
-                        st.checkbox(item, key=f"check_{rayon}_{idx}")
-                
+        for rayon, items in par_rayon.items():
+            if items:
+                st.markdown(f"## {rayon}")
+                for item in sorted(items):
+                    st.checkbox(item, key=f"check_{rayon}_{item}")
                 st.divider()
         
-        # Bouton d'export
-        if st.button("📋 Copier la liste", use_container_width=True):
-            liste_texte = ""
-            for rayon, items_dict in par_rayon.items():
-                if items_dict:
-                    liste_texte += f"\n{rayon}\n"
-                    for item in sorted(items_dict.values()):
-                        liste_texte += f"☐ {item}\n"
-            
-            st.code(liste_texte, language=None)
-            st.success("✅ Liste prête à copier !")
-
-# --- BOUTON DE RESET ---
-st.divider()
-col1, col2, col3 = st.columns([1, 1, 1])
-with col2:
-    if st.button("🔄 Tout réinitialiser", type="secondary", use_container_width=True):
-        if st.session_state.planning:
+        # Bouton de reset
+        if st.button("🔄 Réinitialiser tout", type="secondary", use_container_width=True):
             st.session_state.planning = []
             st.rerun()
-        else:
-            st.info("Le planning est déjà vide")
+else:
+    st.info("👋 Votre planning est vide. Ajoutez une recette ci-dessus pour commencer !")
