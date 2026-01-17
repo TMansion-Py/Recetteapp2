@@ -57,4 +57,33 @@ def extraire_recette(url, nb_pers_voulu):
                 except:
                     qty_affiche = ""
 
-                ingredients_finaux.append(f"{qty_affiche} {unit} {name}".
+                ingredients_finaux.append(f"{qty_affiche} {unit} {name}".strip())
+        
+        return ingredients_finaux
+    except Exception as e:
+        return None
+
+# --- INTERFACE ---
+st.title("🛒 Liste Marmiton")
+
+nb_pers = st.number_input("Nombre de personnes :", min_value=1, value=4)
+liens_input = st.text_area("Collez vos liens Marmiton :")
+
+if st.button("Générer"):
+    urls = [u.strip() for u in liens_input.split('\n') if u.strip()]
+    
+    if urls:
+        liste_finale = []
+        for url in urls:
+            res = extraire_recette(url, nb_pers)
+            if res:
+                liste_finale.extend(res)
+            else:
+                st.error(f"Le site Marmiton bloque l'accès à cette recette : {url[:40]}...")
+        
+        if liste_finale:
+            st.success("Recettes récupérées !")
+            for i, ing in enumerate(sorted(liste_finale)):
+                st.checkbox(ing, key=f"check_{i}")
+        else:
+            st.warning("Aucun ingrédient trouvé. Marmiton a peut-être renforcé sa sécurité.")
