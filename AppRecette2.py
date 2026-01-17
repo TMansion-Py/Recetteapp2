@@ -1,77 +1,85 @@
 import streamlit as st
 import cloudscraper
 from bs4 import BeautifulSoup
+import urllib.parse
 
-st.set_page_config(page_title="Marmiton Fix", page_icon="🍳")
+st.set_page_config(page_title="Marmiton Propre", page_icon="🛒")
 
-def extraire_donnees(url, nb_pers_voulu):
-    # Utilisation d'un scraper plus robuste
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-    
+def extraire_propre(url, nb_pers_voulu):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows'})
     try:
         response = scraper.get(url, timeout=15)
-        if response.status_code != 200:
-            return [f"Erreur de connexion (Code {response.status_code})"]
-            
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # --- 1. RECUPERER LE NOMBRE DE PERSONNES ORIGINAL ---
-        # On cherche partout où il pourrait y avoir le chiffre des personnes
-        nb_orig_tag = soup.find(class_=lambda x: x and 'recipe-ingredients__qt-counter-value' in x)
-        nb_orig = 4 # Valeur par défaut
-        if nb_orig_tag:
-            try:
-                nb_orig = int(''.join(filter(str.isdigit, nb_orig_tag.text)))
-            except: pass
-        
+        # 1. Nombre de personnes
+        nb_orig = 4
+        tag_pers = soup.select_one('.recipe-ingredients__qt-counter-value')
+        if tag_pers:
+            nb_orig = int(''.join(filter(str.isdigit, tag_pers.text)))
         ratio = nb_pers_voulu / nb_orig
 
-        # --- 2. RECUPERER LES INGRÉDIENTS ---
-        # On essaie plusieurs cibles différentes pour être sûr de ne rien rater
-        ingredients = []
-        # Cible les lignes d'ingrédients
-        items = soup.find_all(class_=lambda x: x and 'ingredient' in x.lower())
+        # 2. Ciblage précis des ingrédients
+        # On ne cherche QUE dans la liste des ingrédients officielle
+        liste_ing = []
+        items = soup.select('.recipe-ingredients__list__item')
         
         for item in items:
-            # On extrait le texte propre
-            texte = item.get_text(separator=' ').strip()
-            # On nettoie les espaces multiples
-            texte = " ".join(texte.split())
+            # On récupère les morceaux séparément
+            qty_tag = item.select_one('.count')
+            unit_tag = item.select_one('.unit')
+            name_tag = item.select_one('.ingredient-name')
             
-            # On ignore les textes trop courts ou les titres de sections
-            if len(texte) > 2 and texte not in ingredients:
-                ingredients.append(texte)
+            if name_tag:
+                name = name_tag.text.strip()
+                unit = unit_tag.text.strip() if unit_tag else ""
+                
+                # Calcul quantité
+                try:
+                    qty_text = qty_tag.text.strip().replace(',', '.') if qty_tag else ""
+                    if qty_text:
+                        valeur = float(qty_text) * ratio
+                        qty = int(valeur) if valeur.is_integer() else round(valeur, 2)
+                    else:
+                        qty = ""
+                except:
+                    qty = ""
 
-        return ingredients
-    except Exception as e:
-        return [f"Erreur technique : {str(e)}"]
+                # On ne garde que si on a un nom d'ingrédient
+                liste_ing.append({
+                    "nom": name,
+                    "complet": f"{qty} {unit} {name}".strip()
+                })
+        
+        return liste_ing
+    except:
+        return []
 
 # --- INTERFACE ---
-st.title("🛒 Shopping Intermarché")
+st.title("🛒 Ma Liste Intermarché")
 
-nb_pers = st.number_input("Nombre de personnes :", min_value=1, value=4)
-liens_input = st.text_area("Colle tes liens ici (un par ligne) :")
+nb_pers = st.number_input("Pour combien de personnes ?", min_value=1, value=4)
+liens = st.text_area("Liens Marmiton (un par ligne) :")
 
-if st.button("🔥 Générer ma liste"):
-    urls = [u.strip() for u in liens_input.split('\n') if u.strip()]
-    
+if st.button("🪄 Nettoyer et Générer"):
+    urls = [u.strip() for u in liens.split('\n') if u.strip()]
     if not urls:
-        st.warning("Veuillez coller un lien.")
+        st.warning("Ajoute un lien !")
     else:
-        all_results = []
+        resultats = []
         for url in urls:
-            with st.spinner(f"Analyse de {url[:30]}..."):
-                res = extraire_donnees(url, nb_pers)
-                all_results.extend(res)
+            resultats.extend(extraire_propre(url, nb_pers))
         
-        if all_results:
-            st.markdown("### 📝 Ma Liste")
-            for i, ing in enumerate(all_results):
+        if resultats:
+            st.write(f"### Liste pour {nb_pers} personnes")
+            for i, ing in enumerate(resultats):
                 col1, col2 = st.columns([0.8, 0.2])
-                col1.checkbox(ing, key=f"ing_{i}")
-                # Lien vers Intermarché
-                nom_seul = ing.split(' ')[-1] # On prend le dernier mot pour la recherche
-                url_inter = f"https://www.intermarche.com/recherche/{nom_seul}"
+                
+                # Affichage propre
+                col1.checkbox(ing['complet'], key=f"check_{i}")
+                
+                # Recherche Intermarché optimisée (on cherche le nom de l'ingrédient, pas la quantité)
+                search_term = urllib.parse.quote(ing['nom'])
+                url_inter = f"https://www.intermarche.com/recherche/{search_term}"
                 col2.markdown(f"[🛒]({url_inter})")
         else:
-            st.error("Rien n'a été trouvé. Marmiton bloque peut-être l'accès.")
+            st.error("Aucun ingrédient trouvé. Vérifie que le lien est bien une recette Marmiton.")
