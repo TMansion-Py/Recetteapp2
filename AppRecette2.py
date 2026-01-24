@@ -9,10 +9,12 @@ from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+import qrcode
+import base64
 
 st.set_page_config(page_title="Liste de Courses Marmiton", page_icon="🛒", layout="wide")
 
@@ -161,7 +163,72 @@ def format_quantity(qty):
         return str(int(qty))
     return f"{qty:.1f}".rstrip('0').rstrip('.')
 
-def generate_pdf(recipes_data, merged, non_quantified):
+def generate_shopping_list_text(recipes_data, merged, non_quantified):
+    """Génère le texte de la liste de courses"""
+    text = "🛒 MA LISTE DE COURSES\n\n"
+    
+    text += "📋 MES RECETTES :\n"
+    for idx, recipe in enumerate(recipes_data, 1):
+        text += f"{idx}. {recipe['title']}\n"
+        text += f"   Pour {recipe['target_servings']} personne(s)\n"
+        if recipe['url'] != 'Saisie manuelle':
+            text += f"   {recipe['url']}\n"
+        text += "\n"
+    
+    text += "\n🛍️ LISTE DE COURSES :\n\n"
+    
+    if merged:
+        text += "Ingrédients avec quantités :\n"
+        for (name_lower, unit_lower), data in sorted(merged.items()):
+            qty_str = format_quantity(data['quantity'])
+            unit_display = f" {data['unit']}" if data['unit'] else ""
+            text += f"☐ {qty_str}{unit_display} {data['name']}\n"
+    
+    if non_quantified:
+        text += "\nAutres ingrédients :\n"
+        for name in sorted(non_quantified.keys()):
+            text += f"☐ {name.capitalize()}\n"
+    
+    return text
+
+def generate_qr_code(text_content):
+    """Génère un QR code contenant le texte de la liste"""
+    qr = qrcode.QRCode(
+        version=None,  # Auto-adjust
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(text_content)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convertir en bytes pour Streamlit
+    buffer = BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    
+    return buffer
+
+def generate_qr_code_for_pdf(text_content):
+    """Génère un QR code pour inclusion dans le PDF"""
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(text_content)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    buffer = BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    
+    return buffer
     """Génère un PDF avec les recettes et la liste de courses"""
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
