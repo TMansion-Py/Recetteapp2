@@ -183,59 +183,6 @@ def merge_ingredients(recipes_data):
 
 # ============= FONCTIONS DE GÉNÉRATION =============
 
-def generate_todoist_urls(merged, non_quantified):
-    """Génère des URLs Todoist pour chaque ingrédient"""
-    urls = []
-    
-    # Ingrédients avec quantités
-    if merged:
-        for (name_lower, unit_lower), data in sorted(merged.items()):
-            qty_str = format_quantity(data['quantity'])
-            unit_display = f" {data['unit']}" if data['unit'] else ""
-            task_content = f"{qty_str}{unit_display} {data['name']}"
-            # Encoder l'URL pour Todoist
-            encoded_content = requests.utils.quote(task_content)
-            todoist_url = f"todoist://addtask?content={encoded_content}"
-            urls.append(todoist_url)
-    
-    # Ingrédients sans quantités
-    if non_quantified:
-        for name in sorted(non_quantified.keys()):
-            task_content = name.capitalize()
-            encoded_content = requests.utils.quote(task_content)
-            todoist_url = f"todoist://addtask?content={encoded_content}"
-            urls.append(todoist_url)
-    
-    return urls
-
-def generate_todoist_shopping_list_text(recipes_data, merged, non_quantified):
-    """Génère un texte avec toutes les infos pour Todoist"""
-    text = "LISTE DE COURSES - Instructions\n\n"
-    text += "Scannez les QR codes individuels pour ajouter chaque ingrédient à Todoist,\n"
-    text += "ou utilisez les boutons ci-dessous pour tout ajouter automatiquement.\n\n"
-    
-    text += "="*50 + "\n\n"
-    text += "MES RECETTES :\n"
-    for idx, recipe in enumerate(recipes_data, 1):
-        text += f"{idx}. {recipe['title']} ({recipe['target_servings']} pers.)\n"
-        if recipe['url'] != 'Saisie manuelle':
-            text += f"   {recipe['url']}\n"
-    
-    text += "\n" + "="*50 + "\n\n"
-    text += "INGRÉDIENTS :\n\n"
-    
-    if merged:
-        for (name_lower, unit_lower), data in sorted(merged.items()):
-            qty_str = format_quantity(data['quantity'])
-            unit_display = f" {data['unit']}" if data['unit'] else ""
-            text += f"☐ {qty_str}{unit_display} {data['name']}\n"
-    
-    if non_quantified:
-        for name in sorted(non_quantified.keys()):
-            text += f"☐ {name.capitalize()}\n"
-    
-    return text
-
 def generate_shopping_list_text(recipes_data, merged, non_quantified):
     """Génère le texte de la liste de courses"""
     text = "🛒 MA LISTE DE COURSES\n\n"
@@ -503,59 +450,18 @@ if st.session_state.recipes:
         if not merged and not non_quantified:
             st.warning("⚠️ Aucun ingrédient à afficher. Vérifiez que vos recettes contiennent bien des ingrédients.")
         
-        # Options de téléchargement et Todoist
+        # Options de téléchargement
         if merged or non_quantified:
             st.divider()
             
-            # Section Todoist
-            st.subheader("✅ Ajouter à Todoist")
-            st.write("Cliquez sur les boutons pour ajouter chaque ingrédient directement dans Todoist !")
-            
-            # Créer les URLs Todoist
-            todoist_urls = generate_todoist_urls(merged, non_quantified)
-            
-            # Afficher les boutons pour chaque ingrédient
-            col_count = 0
-            cols = st.columns(3)
-            
-            if merged:
-                st.write("**Ingrédients avec quantités :**")
-                for (name_lower, unit_lower), data in sorted(merged.items()):
-                    qty_str = format_quantity(data['quantity'])
-                    unit_display = f" {data['unit']}" if data['unit'] else ""
-                    task_content = f"{qty_str}{unit_display} {data['name']}"
-                    encoded_content = requests.utils.quote(task_content)
-                    todoist_url = f"todoist://addtask?content={encoded_content}"
-                    
-                    with cols[col_count % 3]:
-                        st.markdown(f"[➕ {task_content[:30]}...]({todoist_url})")
-                    col_count += 1
-            
-            if non_quantified:
-                st.write("")
-                st.write("**Autres ingrédients :**")
-                for name in sorted(non_quantified.keys()):
-                    task_content = name.capitalize()
-                    encoded_content = requests.utils.quote(task_content)
-                    todoist_url = f"todoist://addtask?content={encoded_content}"
-                    
-                    with cols[col_count % 3]:
-                        st.markdown(f"[➕ {task_content[:30]}...]({todoist_url})")
-                    col_count += 1
-            
-            st.info("💡 Astuce : Ces liens ouvrent Todoist sur votre appareil. Pour mobile, scannez le QR code ci-dessous !")
-            
-            st.divider()
-            
-            # Générer le texte de la liste pour QR code
+            # Générer le texte de la liste
             shopping_list_text = generate_shopping_list_text(st.session_state.recipes, merged, non_quantified)
-            todoist_info_text = generate_todoist_shopping_list_text(st.session_state.recipes, merged, non_quantified)
             
-            # Afficher le QR Code avec instructions Todoist
-            st.subheader("📱 QR Code pour Mobile")
-            st.write("Scannez ce QR code pour voir la liste complète et les instructions d'ajout à Todoist !")
+            # Afficher le QR Code
+            st.subheader("📱 QR Code de votre liste")
+            st.write("Scannez ce QR code avec votre téléphone pour avoir la liste lors de vos courses !")
             
-            qr_img = generate_qr_code(todoist_info_text)
+            qr_img = generate_qr_code(shopping_list_text)
             st.image(qr_img, width=300)
             
             st.divider()
