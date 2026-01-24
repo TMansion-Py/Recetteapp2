@@ -312,60 +312,30 @@ with tab1:
     with col2:
         nb_persons = st.number_input("Nombre de personnes", min_value=1, max_value=50, value=4, key="auto_persons")
 
-    if st.button("Extraire la recette", type="primary", key="extract_btn"):
+    if st.button("Extraire et ajouter la recette", type="primary", key="extract_btn"):
         if recipe_url:
             with st.spinner("Extraction de la recette en cours..."):
                 recipe_data = extract_marmiton_recipe(recipe_url)
                 
-                if recipe_data:
-                    st.session_state.extracted_recipe = recipe_data
-                    st.session_state.target_persons = nb_persons
-                    st.rerun()
-        else:
-            st.warning("Veuillez entrer une URL de recette")
-    
-    # Afficher la recette extraite si elle existe
-    if 'extracted_recipe' in st.session_state and st.session_state.extracted_recipe:
-        recipe_data = st.session_state.extracted_recipe
-        
-        st.success("✅ Recette extraite avec succès !")
-        st.info(f"📝 Titre: {recipe_data['title']}")
-        st.info(f"👥 Pour {recipe_data['servings']} personnes (original)")
-        st.info(f"🥘 {len(recipe_data['ingredients'])} ingrédients extraits")
-        
-        if recipe_data['ingredients']:
-            with st.expander("Voir les ingrédients extraits", expanded=True):
-                for ing in recipe_data['ingredients']:
-                    st.write(f"- {ing}")
-            
-            col_a, col_b, col_c = st.columns([1, 1, 2])
-            with col_a:
-                if st.button("✅ Confirmer et ajouter", type="primary", key="confirm_btn"):
+                if recipe_data and recipe_data['ingredients']:
                     st.session_state.recipes.append({
                         'title': recipe_data['title'],
                         'original_servings': recipe_data['servings'],
-                        'target_servings': st.session_state.target_persons,
+                        'target_servings': nb_persons,
                         'ingredients': recipe_data['ingredients'],
                         'url': recipe_data['url']
                     })
-                    # Nettoyer la recette extraite
-                    del st.session_state.extracted_recipe
-                    if 'target_persons' in st.session_state:
-                        del st.session_state.target_persons
-                    st.success(f"✅ Recette ajoutée !")
+                    st.success(f"✅ Recette '{recipe_data['title']}' ajoutée avec {len(recipe_data['ingredients'])} ingrédients !")
+                    
+                    with st.expander("Voir les ingrédients extraits"):
+                        for ing in recipe_data['ingredients']:
+                            st.write(f"- {ing}")
+                    
                     st.rerun()
-            
-            with col_b:
-                if st.button("❌ Annuler", key="cancel_btn"):
-                    del st.session_state.extracted_recipe
-                    if 'target_persons' in st.session_state:
-                        del st.session_state.target_persons
-                    st.rerun()
+                elif recipe_data and not recipe_data['ingredients']:
+                    st.warning("⚠️ Aucun ingrédient extrait. Utilisez l'onglet 'Saisie manuelle' pour ajouter la recette.")
         else:
-            st.warning("⚠️ Aucun ingrédient extrait. Utilisez l'onglet 'Saisie manuelle' pour ajouter la recette.")
-            if st.button("❌ Fermer", key="close_btn"):
-                del st.session_state.extracted_recipe
-                st.rerun()
+            st.warning("Veuillez entrer une URL de recette")
 
 with tab2:
     st.header("✍️ Ajouter une recette manuellement")
