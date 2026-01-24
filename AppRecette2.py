@@ -17,27 +17,106 @@ def extract_marmiton_recipe(url):
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extraction du titre
-        title_elem = soup.find('h1', class_='SHRD__sc-10plygc-0')
-        title = title_elem.text.strip() if title_elem else "Recette sans titre"
+        # Extraction du titre - plusieurs méthodes
+        title = "Recette sans titre"
+        title_selectors = [
+            ('h1', {'class_': 'SHRD__sc-10plygc-0'}),
+            ('h1', {}),
+            ('meta', {'property': 'og:title'})
+        ]
         
-        # Extraction du nombre de personnes
+        for tag, attrs in title_selectors:
+            elem = soup.find(tag, attrs)
+            if elem:
+                if tag == 'meta':
+                    title = elem.get('content', title)
+                else:
+                    title = elem.text.strip()
+                break
+        
+        # Extraction du nombre de personnes - plusieurs méthodes
+        servings = 4
+        servings_patterns = [
+            (r'pour\s+(\d+)\s+personnes?', re.IGNORECASE),
+            (r'(\d+)\s+personnes?', re.IGNORECASE),
+        ]
+        
+        # Chercher dans les spans
         servings_elem = soup.find('span', class_='SHRD__sc-w4kphj-0')
-        servings = 4  # valeur par défaut
+        if not servings_elem:
+            servings_elem = soup.find(string=re.compile(r'personnes?', re.IGNORECASE))
+        
         if servings_elem:
-            servings_text = servings_elem.text
-            match = re.search(r'\d+', servings_text)
-            if match:
-                servings = int(match.group())
+            servings_text = str(servings_elem)
+            for pattern, flags in servings_patterns:
+                match = re.search(pattern, servings_text, flags)
+                if match:
+                    servings = int(match.group(1))
+                    break
         
-        # Extraction des ingrédients
+        # Extraction des ingrédients - PLUSIEURS MÉTHODES
         ingredients = []
-        ingredient_elems = soup.find_all('span', class_='SHRD__sc-1s5xfvn-0')
         
-        for elem in ingredient_elems:
-            ingredient_text = elem.text.strip()
-            if ingredient_text:
-                ingredients.append(ingredient_text)
+        # Méthode 1: Classes spécifiques Marmiton
+        ingredient_classes = [
+            'SHRD__sc-1s5xfvn-0',
+            'ingredient',
+            'recipe-ingredient',
+            'ingredient-item'
+        ]
+        
+        for class_name in ingredient_classes:
+            ingredient_elems = soup.find_all('span', class_=class_name)
+            if not ingredient_elems:
+                ingredient_elems = soup.find_all('li', class_=class_name)
+            if not ingredient_elems:
+                ingredient_elems = soup.find_all('div', class_=class_name)
+            
+            if ingredient_elems:
+                for elem in ingredient_elems:
+                    ingredient_text = elem.get_text(strip=True)
+                    if ingredient_text and len(ingredient_text) > 2:
+                        ingredients.append(ingredient_text)
+                break
+        
+        # Méthode 2: Recherche dans les listes
+        if not ingredients:
+            lists = soup.find_all(['ul', 'ol'])
+            for lst in lists:
+                items = lst.find_all('li')
+                if items and len(items) > 2:  # Probablement une liste d'ingrédients
+                    temp_ingredients = []
+                    for item in items:
+                        text = item.get_text(strip=True)
+                        if text and len(text) > 2:
+                            temp_ingredients.append(text)
+                    if temp_ingredients:
+                        ingredients = temp_ingredients
+                        break
+        
+        # Méthode 3: Recherche par pattern JSON-LD
+        if not ingredients:
+            json_ld = soup.find('script', type='application/ld+json')
+            if json_ld:
+                try:
+                    import json
+                    data = json.loads(json_ld.string)
+                    if isinstance(data, list):
+                        data = data[0]
+                    if 'recipeIngredient' in data:
+                        ingredients = data['recipeIngredient']
+                    elif 'ingredients' in data:
+                        ingredients = data['ingredients']
+                except:
+                    pass
+        
+        # Affichage debug
+        st.info(f"🔍 Recette trouvée: {title}")
+        st.info(f"👥 Pour {servings} personnes")
+        st.info(f"📝 {len(ingredients)} ingrédients extraits")
+        
+        if not ingredients:
+            st.warning("⚠️ Aucun ingrédient extrait automatiquement. Vous pouvez les ajouter manuellement ci-dessous.")
         
         return {
             'title': title,
@@ -46,7 +125,9 @@ def extract_marmiton_recipe(url):
             'url': url
         }
     except Exception as e:
-        st.error(f"Erreur lors de l'extraction : {str(e)}")
+        st.error(f"❌ Erreur lors de l'extraction : {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def parse_ingredient(ingredient_text, ratio):
@@ -158,7 +239,14 @@ if st.button("Ajouter la recette", type="primary"):
                     'ingredients': recipe_data['ingredients'],
                     'url': recipe_data['url']
                 })
-                st.success(f"✅ Recette '{recipe_data['title']}' ajoutée !")
+                st.success(f"✅ Recette '{recipe_data['title']}' ajoutée avec {len(recipe_data['ingredients'])} ingrédients!")
+                
+                # Afficher les ingrédients extraits
+                if recipe_data['ingredients']:
+                    with st.expander("Voir les ingrédients extraits"):
+                        for ing in recipe_data['ingredients']:
+                            st.write(f"- {ing}")
+                
                 st.rerun()
     else:
         st.warning("Veuillez entrer une URL de recette")
