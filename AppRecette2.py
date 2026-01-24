@@ -9,14 +9,13 @@ from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image
-from reportlab.lib.enums import TA_LEFT, TA_CENTER
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
+from reportlab.lib.enums import TA_CENTER
 import qrcode
-import base64
 
 st.set_page_config(page_title="Liste de Courses Marmiton", page_icon="🛒", layout="wide")
+
+# ============= FONCTIONS D'EXTRACTION =============
 
 def extract_marmiton_recipe(url):
     """Extrait les informations d'une recette Marmiton"""
@@ -34,8 +33,6 @@ def extract_marmiton_recipe(url):
         
         # Extraction du titre
         title = "Recette sans titre"
-        
-        # Essayer plusieurs sélecteurs pour le titre
         title_elem = soup.find('h1')
         if title_elem:
             title = title_elem.get_text(strip=True)
@@ -47,10 +44,10 @@ def extract_marmiton_recipe(url):
         if servings_match:
             servings = int(servings_match.group(1))
         
-        # Extraction des ingrédients - MÉTHODE AMÉLIORÉE
+        # Extraction des ingrédients
         ingredients = []
         
-        # Méthode 1: Chercher dans le JSON-LD (données structurées)
+        # Méthode 1: JSON-LD
         json_scripts = soup.find_all('script', type='application/ld+json')
         for script in json_scripts:
             try:
@@ -68,9 +65,8 @@ def extract_marmiton_recipe(url):
             except:
                 continue
         
-        # Méthode 2: Chercher toutes les listes possibles
+        # Méthode 2: Listes
         if not ingredients:
-            # Chercher tous les éléments qui pourraient contenir des ingrédients
             possible_containers = soup.find_all(['ul', 'ol', 'div'], class_=re.compile(r'ingredient', re.IGNORECASE))
             
             for container in possible_containers:
@@ -78,20 +74,18 @@ def extract_marmiton_recipe(url):
                 temp_ingredients = []
                 for item in items:
                     text = item.get_text(strip=True)
-                    # Filtrer les textes qui ressemblent à des ingrédients
                     if text and 3 < len(text) < 200 and not text.startswith('http'):
                         temp_ingredients.append(text)
                 
-                if len(temp_ingredients) >= 3:  # Au moins 3 ingrédients
+                if len(temp_ingredients) >= 3:
                     ingredients = temp_ingredients
                     break
         
-        # Méthode 3: Chercher tous les spans/divs avec du texte qui ressemble à des ingrédients
+        # Méthode 3: Pattern matching
         if not ingredients:
             all_elements = soup.find_all(['span', 'div', 'li'])
             for elem in all_elements:
                 text = elem.get_text(strip=True)
-                # Pattern pour détecter un ingrédient (commence par un chiffre ou contient des mots clés)
                 if re.match(r'^\d+', text) or any(word in text.lower() for word in ['huile', 'sel', 'poivre', 'farine', 'sucre', 'beurre', 'oeuf', 'lait']):
                     if 3 < len(text) < 200 and text not in ingredients:
                         ingredients.append(text)
@@ -99,7 +93,7 @@ def extract_marmiton_recipe(url):
         return {
             'title': title,
             'servings': servings,
-            'ingredients': ingredients[:50],  # Limiter à 50 ingrédients max
+            'ingredients': ingredients[:50],
             'url': url
         }
     except Exception as e:
@@ -107,6 +101,25 @@ def extract_marmiton_recipe(url):
         import traceback
         st.code(traceback.format_exc())
         return None
+
+# ============= FONCTIONS DE PARSING =============
+
+def parse_quantity(qty_str):
+    """Convertit une chaîne de quantité en nombre"""
+    qty_str = qty_str.replace(',', '.').strip()
+    
+    if '/' in qty_str:
+        try:
+            return float(Fraction(qty_str))
+        except:
+            parts = qty_str.split('/')
+            if len(parts) == 2:
+                try:
+                    return float(parts[0]) / float(parts[1])
+                except:
+                    return float(qty_str.split()[0])
+    
+    return float(qty_str)
 
 def parse_ingredient(ingredient_text, ratio):
     """Parse un ingrédient et ajuste la quantité selon le ratio"""
@@ -138,23 +151,6 @@ def parse_ingredient(ingredient_text, ratio):
     
     return None, "", ingredient_text.strip()
 
-def parse_quantity(qty_str):
-    """Convertit une chaîne de quantité en nombre"""
-    qty_str = qty_str.replace(',', '.').strip()
-    
-    if '/' in qty_str:
-        try:
-            return float(Fraction(qty_str))
-        except:
-            parts = qty_str.split('/')
-            if len(parts) == 2:
-                try:
-                    return float(parts[0]) / float(parts[1])
-                except:
-                    return float(qty_str.split()[0])
-    
-    return float(qty_str)
-
 def format_quantity(qty):
     """Formate une quantité pour l'affichage"""
     if qty is None:
@@ -162,6 +158,83 @@ def format_quantity(qty):
     if qty == int(qty):
         return str(int(qty))
     return f"{qty:.1f}".rstrip('0').rstrip('.')
+
+def merge_ingredients(recipes_data):
+    """Fusionne les ingrédients de plusieurs recettes"""
+    merged = defaultdict(lambda: defaultdict(float))
+    non_quantified = defaultdict(set)
+    
+    for recipe in recipes_data:
+        ratio = recipe['target_servings'] / recipe['original_servings']
+        
+        for ingredient in recipe['ingredients']:
+            qty, unit, name = parse_ingredient(ingredient, ratio)
+            name_lower = name.lower()
+            
+            if qty is not None:
+                key = (name_lower, unit.lower())
+                merged[key]['quantity'] += qty
+                merged[key]['name'] = name
+                merged[key]['unit'] = unit
+            else:
+                non_quantified[name_lower].add(recipe['title'])
+    
+    return merged, non_quantified
+
+# ============= FONCTIONS DE GÉNÉRATION =============
+
+def generate_todoist_urls(merged, non_quantified):
+    """Génère des URLs Todoist pour chaque ingrédient"""
+    urls = []
+    
+    # Ingrédients avec quantités
+    if merged:
+        for (name_lower, unit_lower), data in sorted(merged.items()):
+            qty_str = format_quantity(data['quantity'])
+            unit_display = f" {data['unit']}" if data['unit'] else ""
+            task_content = f"{qty_str}{unit_display} {data['name']}"
+            # Encoder l'URL pour Todoist
+            encoded_content = requests.utils.quote(task_content)
+            todoist_url = f"todoist://addtask?content={encoded_content}"
+            urls.append(todoist_url)
+    
+    # Ingrédients sans quantités
+    if non_quantified:
+        for name in sorted(non_quantified.keys()):
+            task_content = name.capitalize()
+            encoded_content = requests.utils.quote(task_content)
+            todoist_url = f"todoist://addtask?content={encoded_content}"
+            urls.append(todoist_url)
+    
+    return urls
+
+def generate_todoist_shopping_list_text(recipes_data, merged, non_quantified):
+    """Génère un texte avec toutes les infos pour Todoist"""
+    text = "LISTE DE COURSES - Instructions\n\n"
+    text += "Scannez les QR codes individuels pour ajouter chaque ingrédient à Todoist,\n"
+    text += "ou utilisez les boutons ci-dessous pour tout ajouter automatiquement.\n\n"
+    
+    text += "="*50 + "\n\n"
+    text += "MES RECETTES :\n"
+    for idx, recipe in enumerate(recipes_data, 1):
+        text += f"{idx}. {recipe['title']} ({recipe['target_servings']} pers.)\n"
+        if recipe['url'] != 'Saisie manuelle':
+            text += f"   {recipe['url']}\n"
+    
+    text += "\n" + "="*50 + "\n\n"
+    text += "INGRÉDIENTS :\n\n"
+    
+    if merged:
+        for (name_lower, unit_lower), data in sorted(merged.items()):
+            qty_str = format_quantity(data['quantity'])
+            unit_display = f" {data['unit']}" if data['unit'] else ""
+            text += f"☐ {qty_str}{unit_display} {data['name']}\n"
+    
+    if non_quantified:
+        for name in sorted(non_quantified.keys()):
+            text += f"☐ {name.capitalize()}\n"
+    
+    return text
 
 def generate_shopping_list_text(recipes_data, merged, non_quantified):
     """Génère le texte de la liste de courses"""
@@ -194,26 +267,6 @@ def generate_shopping_list_text(recipes_data, merged, non_quantified):
 def generate_qr_code(text_content):
     """Génère un QR code contenant le texte de la liste"""
     qr = qrcode.QRCode(
-        version=None,  # Auto-adjust
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
-    )
-    qr.add_data(text_content)
-    qr.make(fit=True)
-    
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    # Convertir en bytes pour Streamlit
-    buffer = BytesIO()
-    img.save(buffer, format='PNG')
-    buffer.seek(0)
-    
-    return buffer
-
-def generate_qr_code_for_pdf(text_content):
-    """Génère un QR code pour inclusion dans le PDF"""
-    qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
         box_size=10,
@@ -229,6 +282,8 @@ def generate_qr_code_for_pdf(text_content):
     buffer.seek(0)
     
     return buffer
+
+def generate_pdf(recipes_data, merged, non_quantified):
     """Génère un PDF avec les recettes et la liste de courses"""
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
@@ -239,7 +294,6 @@ def generate_qr_code_for_pdf(text_content):
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=24,
-        textColor='#2E86AB',
         spaceAfter=30,
         alignment=TA_CENTER
     )
@@ -248,7 +302,6 @@ def generate_qr_code_for_pdf(text_content):
         'CustomHeading',
         parent=styles['Heading2'],
         fontSize=16,
-        textColor='#A23B72',
         spaceAfter=12,
         spaceBefore=20
     )
@@ -262,6 +315,16 @@ def generate_qr_code_for_pdf(text_content):
     
     # Titre principal
     story.append(Paragraph("🛒 Ma Liste de Courses", title_style))
+    story.append(Spacer(1, 0.5*cm))
+    
+    # Générer et ajouter le QR Code
+    text_content = generate_shopping_list_text(recipes_data, merged, non_quantified)
+    qr_img = generate_qr_code(text_content)
+    qr_image = Image(qr_img, width=4*cm, height=4*cm)
+    qr_image.hAlign = 'CENTER'
+    story.append(qr_image)
+    story.append(Paragraph("<i>Scannez ce QR code pour voir la liste sur votre téléphone</i>", 
+                          ParagraphStyle('center', parent=normal_style, alignment=TA_CENTER, fontSize=9)))
     story.append(Spacer(1, 0.5*cm))
     
     # Section recettes
@@ -296,7 +359,7 @@ def generate_qr_code_for_pdf(text_content):
         for (name_lower, unit_lower), data in sorted(merged.items()):
             qty_str = format_quantity(data['quantity'])
             unit_display = f" {data['unit']}" if data['unit'] else ""
-            ingredient_text = f"• <b>{qty_str}{unit_display}</b> {data['name']}"
+            ingredient_text = f"☐ <b>{qty_str}{unit_display}</b> {data['name']}"
             story.append(Paragraph(ingredient_text, normal_style))
         
         story.append(Spacer(1, 0.5*cm))
@@ -307,66 +370,23 @@ def generate_qr_code_for_pdf(text_content):
         story.append(Spacer(1, 0.2*cm))
         
         for name in sorted(non_quantified.keys()):
-            story.append(Paragraph(f"• {name.capitalize()}", normal_style))
+            story.append(Paragraph(f"☐ {name.capitalize()}", normal_style))
     
     # Génération du PDF
     doc.build(story)
     buffer.seek(0)
     return buffer
 
-def merge_ingredients(recipes_data):
-    """Fusionne les ingrédients de plusieurs recettes"""
-    merged = defaultdict(lambda: defaultdict(float))
-    non_quantified = defaultdict(set)
-    
-    for recipe in recipes_data:
-        ratio = recipe['target_servings'] / recipe['original_servings']
-        
-        for ingredient in recipe['ingredients']:
-            qty, unit, name = parse_ingredient(ingredient, ratio)
-            name_lower = name.lower()
-            
-            if qty is not None:
-                key = (name_lower, unit.lower())
-                merged[key]['quantity'] += qty
-                merged[key]['name'] = name
-                merged[key]['unit'] = unit
-            else:
-                non_quantified[name_lower].add(recipe['title'])
-    
-    return merged, non_quantified
-    """Fusionne les ingrédients de plusieurs recettes"""
-    merged = defaultdict(lambda: defaultdict(float))
-    non_quantified = defaultdict(set)
-    
-    for recipe in recipes_data:
-        ratio = recipe['target_servings'] / recipe['original_servings']
-        
-        for ingredient in recipe['ingredients']:
-            qty, unit, name = parse_ingredient(ingredient, ratio)
-            name_lower = name.lower()
-            
-            if qty is not None:
-                key = (name_lower, unit.lower())
-                merged[key]['quantity'] += qty
-                merged[key]['name'] = name
-                merged[key]['unit'] = unit
-            else:
-                non_quantified[name_lower].add(recipe['title'])
-    
-    return merged, non_quantified
+# ============= INTERFACE STREAMLIT =============
 
 # Initialisation de la session
 if 'recipes' not in st.session_state:
     st.session_state.recipes = []
-if 'manual_mode' not in st.session_state:
-    st.session_state.manual_mode = False
 
-# Interface Streamlit
 st.title("🛒 Générateur de Liste de Courses Marmiton")
 st.markdown("Ajoutez des recettes Marmiton et générez automatiquement votre liste de courses !")
 
-# Onglets pour mode automatique et manuel
+# Onglets
 tab1, tab2 = st.tabs(["📡 Extraction automatique", "✍️ Saisie manuelle"])
 
 with tab1:
@@ -471,30 +491,71 @@ if st.session_state.recipes:
             for (name_lower, unit_lower), data in sorted(merged.items()):
                 qty_str = format_quantity(data['quantity'])
                 unit_display = f" {data['unit']}" if data['unit'] else ""
-                st.write(f"- **{qty_str}{unit_display}** {data['name']}")
+                st.write(f"☐ **{qty_str}{unit_display}** {data['name']}")
         
         # Ingrédients sans quantités
         if non_quantified:
             st.write("")
             st.write("**Autres ingrédients :**")
             for name in sorted(non_quantified.keys()):
-                st.write(f"- {name.capitalize()}")
+                st.write(f"☐ {name.capitalize()}")
         
         if not merged and not non_quantified:
             st.warning("⚠️ Aucun ingrédient à afficher. Vérifiez que vos recettes contiennent bien des ingrédients.")
         
-        # Options de téléchargement
+        # Options de téléchargement et Todoist
         if merged or non_quantified:
             st.divider()
             
-            # Générer le texte de la liste
+            # Section Todoist
+            st.subheader("✅ Ajouter à Todoist")
+            st.write("Cliquez sur les boutons pour ajouter chaque ingrédient directement dans Todoist !")
+            
+            # Créer les URLs Todoist
+            todoist_urls = generate_todoist_urls(merged, non_quantified)
+            
+            # Afficher les boutons pour chaque ingrédient
+            col_count = 0
+            cols = st.columns(3)
+            
+            if merged:
+                st.write("**Ingrédients avec quantités :**")
+                for (name_lower, unit_lower), data in sorted(merged.items()):
+                    qty_str = format_quantity(data['quantity'])
+                    unit_display = f" {data['unit']}" if data['unit'] else ""
+                    task_content = f"{qty_str}{unit_display} {data['name']}"
+                    encoded_content = requests.utils.quote(task_content)
+                    todoist_url = f"todoist://addtask?content={encoded_content}"
+                    
+                    with cols[col_count % 3]:
+                        st.markdown(f"[➕ {task_content[:30]}...]({todoist_url})")
+                    col_count += 1
+            
+            if non_quantified:
+                st.write("")
+                st.write("**Autres ingrédients :**")
+                for name in sorted(non_quantified.keys()):
+                    task_content = name.capitalize()
+                    encoded_content = requests.utils.quote(task_content)
+                    todoist_url = f"todoist://addtask?content={encoded_content}"
+                    
+                    with cols[col_count % 3]:
+                        st.markdown(f"[➕ {task_content[:30]}...]({todoist_url})")
+                    col_count += 1
+            
+            st.info("💡 Astuce : Ces liens ouvrent Todoist sur votre appareil. Pour mobile, scannez le QR code ci-dessous !")
+            
+            st.divider()
+            
+            # Générer le texte de la liste pour QR code
             shopping_list_text = generate_shopping_list_text(st.session_state.recipes, merged, non_quantified)
+            todoist_info_text = generate_todoist_shopping_list_text(st.session_state.recipes, merged, non_quantified)
             
-            # Afficher le QR Code
-            st.subheader("📱 QR Code de votre liste")
-            st.write("Scannez ce QR code avec votre téléphone pour avoir la liste lors de vos courses !")
+            # Afficher le QR Code avec instructions Todoist
+            st.subheader("📱 QR Code pour Mobile")
+            st.write("Scannez ce QR code pour voir la liste complète et les instructions d'ajout à Todoist !")
             
-            qr_img = generate_qr_code(shopping_list_text)
+            qr_img = generate_qr_code(todoist_info_text)
             st.image(qr_img, width=300)
             
             st.divider()
