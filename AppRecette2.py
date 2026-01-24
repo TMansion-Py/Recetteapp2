@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import re
 from fractions import Fraction
 from collections import defaultdict
+import json
 
 st.set_page_config(page_title="Liste de Courses Marmiton", page_icon="🛒", layout="wide")
 
@@ -11,132 +12,97 @@ def extract_marmiton_recipe(url):
     """Extrait les informations d'une recette Marmiton"""
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extraction du titre - plusieurs méthodes
+        # DEBUG: Sauvegarder le HTML
+        with st.expander("🔍 DEBUG - Voir le code HTML (pour diagnostic)"):
+            st.code(soup.prettify()[:3000] + "...", language="html")
+        
+        # Extraction du titre
         title = "Recette sans titre"
-        title_selectors = [
-            ('h1', {'class_': 'SHRD__sc-10plygc-0'}),
-            ('h1', {}),
-            ('meta', {'property': 'og:title'})
-        ]
         
-        for tag, attrs in title_selectors:
-            elem = soup.find(tag, attrs)
-            if elem:
-                if tag == 'meta':
-                    title = elem.get('content', title)
-                else:
-                    title = elem.text.strip()
-                break
+        # Essayer plusieurs sélecteurs pour le titre
+        title_elem = soup.find('h1')
+        if title_elem:
+            title = title_elem.get_text(strip=True)
         
-        # Extraction du nombre de personnes - plusieurs méthodes
+        # Extraction du nombre de personnes
         servings = 4
-        servings_patterns = [
-            (r'pour\s+(\d+)\s+personnes?', re.IGNORECASE),
-            (r'(\d+)\s+personnes?', re.IGNORECASE),
-        ]
+        text_content = soup.get_text()
+        servings_match = re.search(r'(\d+)\s*(?:pers(?:onnes?)?|conv(?:ives?)?)', text_content, re.IGNORECASE)
+        if servings_match:
+            servings = int(servings_match.group(1))
         
-        # Chercher dans les spans
-        servings_elem = soup.find('span', class_='SHRD__sc-w4kphj-0')
-        if not servings_elem:
-            servings_elem = soup.find(string=re.compile(r'personnes?', re.IGNORECASE))
-        
-        if servings_elem:
-            servings_text = str(servings_elem)
-            for pattern, flags in servings_patterns:
-                match = re.search(pattern, servings_text, flags)
-                if match:
-                    servings = int(match.group(1))
-                    break
-        
-        # Extraction des ingrédients - PLUSIEURS MÉTHODES
+        # Extraction des ingrédients - MÉTHODE AMÉLIORÉE
         ingredients = []
         
-        # Méthode 1: Classes spécifiques Marmiton
-        ingredient_classes = [
-            'SHRD__sc-1s5xfvn-0',
-            'ingredient',
-            'recipe-ingredient',
-            'ingredient-item'
-        ]
+        # Méthode 1: Chercher dans le JSON-LD (données structurées)
+        json_scripts = soup.find_all('script', type='application/ld+json')
+        for script in json_scripts:
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and 'recipeIngredient' in item:
+                            ingredients = item['recipeIngredient']
+                            break
+                elif isinstance(data, dict) and 'recipeIngredient' in data:
+                    ingredients = data['recipeIngredient']
+                
+                if ingredients:
+                    break
+            except:
+                continue
         
-        for class_name in ingredient_classes:
-            ingredient_elems = soup.find_all('span', class_=class_name)
-            if not ingredient_elems:
-                ingredient_elems = soup.find_all('li', class_=class_name)
-            if not ingredient_elems:
-                ingredient_elems = soup.find_all('div', class_=class_name)
+        # Méthode 2: Chercher toutes les listes possibles
+        if not ingredients:
+            # Chercher tous les éléments qui pourraient contenir des ingrédients
+            possible_containers = soup.find_all(['ul', 'ol', 'div'], class_=re.compile(r'ingredient', re.IGNORECASE))
             
-            if ingredient_elems:
-                for elem in ingredient_elems:
-                    ingredient_text = elem.get_text(strip=True)
-                    if ingredient_text and len(ingredient_text) > 2:
-                        ingredients.append(ingredient_text)
-                break
+            for container in possible_containers:
+                items = container.find_all(['li', 'p', 'div'])
+                temp_ingredients = []
+                for item in items:
+                    text = item.get_text(strip=True)
+                    # Filtrer les textes qui ressemblent à des ingrédients
+                    if text and 3 < len(text) < 200 and not text.startswith('http'):
+                        temp_ingredients.append(text)
+                
+                if len(temp_ingredients) >= 3:  # Au moins 3 ingrédients
+                    ingredients = temp_ingredients
+                    break
         
-        # Méthode 2: Recherche dans les listes
+        # Méthode 3: Chercher tous les spans/divs avec du texte qui ressemble à des ingrédients
         if not ingredients:
-            lists = soup.find_all(['ul', 'ol'])
-            for lst in lists:
-                items = lst.find_all('li')
-                if items and len(items) > 2:  # Probablement une liste d'ingrédients
-                    temp_ingredients = []
-                    for item in items:
-                        text = item.get_text(strip=True)
-                        if text and len(text) > 2:
-                            temp_ingredients.append(text)
-                    if temp_ingredients:
-                        ingredients = temp_ingredients
-                        break
-        
-        # Méthode 3: Recherche par pattern JSON-LD
-        if not ingredients:
-            json_ld = soup.find('script', type='application/ld+json')
-            if json_ld:
-                try:
-                    import json
-                    data = json.loads(json_ld.string)
-                    if isinstance(data, list):
-                        data = data[0]
-                    if 'recipeIngredient' in data:
-                        ingredients = data['recipeIngredient']
-                    elif 'ingredients' in data:
-                        ingredients = data['ingredients']
-                except:
-                    pass
-        
-        # Affichage debug
-        st.info(f"🔍 Recette trouvée: {title}")
-        st.info(f"👥 Pour {servings} personnes")
-        st.info(f"📝 {len(ingredients)} ingrédients extraits")
-        
-        if not ingredients:
-            st.warning("⚠️ Aucun ingrédient extrait automatiquement. Vous pouvez les ajouter manuellement ci-dessous.")
+            all_elements = soup.find_all(['span', 'div', 'li'])
+            for elem in all_elements:
+                text = elem.get_text(strip=True)
+                # Pattern pour détecter un ingrédient (commence par un chiffre ou contient des mots clés)
+                if re.match(r'^\d+', text) or any(word in text.lower() for word in ['huile', 'sel', 'poivre', 'farine', 'sucre', 'beurre', 'oeuf', 'lait']):
+                    if 3 < len(text) < 200 and text not in ingredients:
+                        ingredients.append(text)
         
         return {
             'title': title,
             'servings': servings,
-            'ingredients': ingredients,
+            'ingredients': ingredients[:50],  # Limiter à 50 ingrédients max
             'url': url
         }
     except Exception as e:
         st.error(f"❌ Erreur lors de l'extraction : {str(e)}")
         import traceback
-        st.error(traceback.format_exc())
+        st.code(traceback.format_exc())
         return None
 
 def parse_ingredient(ingredient_text, ratio):
     """Parse un ingrédient et ajuste la quantité selon le ratio"""
-    # Recherche de quantité au début
     patterns = [
-        r'^(\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?)\s*(kg|g|l|ml|cl|cuillères?|c\.|càs|càc|pincée|gousse|feuille|branche|botte)?\s+(?:de\s+|d\')?(.+)',
+        r'^(\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?)\s*(kg|g|l|ml|cl|cuillères?|cuillère|c\.|càs|càc|cs|cc|pincée|gousse|feuille|branche|botte)?\s+(?:de\s+|d\')?(.+)',
         r'^(\d+(?:[.,]\d+)?)\s+(.+)',
-        r'^(.+)'
     ]
     
     for pattern in patterns:
@@ -146,18 +112,19 @@ def parse_ingredient(ingredient_text, ratio):
             
             if len(groups) == 3:
                 quantity_str, unit, name = groups
-                quantity = parse_quantity(quantity_str) * ratio
-                unit = unit if unit else ""
-                return quantity, unit.strip(), name.strip()
+                try:
+                    quantity = parse_quantity(quantity_str) * ratio
+                    unit = unit if unit else ""
+                    return quantity, unit.strip(), name.strip()
+                except:
+                    pass
             elif len(groups) == 2:
                 quantity_str, name = groups
                 try:
                     quantity = parse_quantity(quantity_str) * ratio
                     return quantity, "", name.strip()
                 except:
-                    return None, "", ingredient_text.strip()
-            else:
-                return None, "", groups[0].strip()
+                    pass
     
     return None, "", ingredient_text.strip()
 
@@ -208,48 +175,92 @@ def merge_ingredients(recipes_data):
     
     return merged, non_quantified
 
+# Initialisation de la session
+if 'recipes' not in st.session_state:
+    st.session_state.recipes = []
+if 'manual_mode' not in st.session_state:
+    st.session_state.manual_mode = False
+
 # Interface Streamlit
 st.title("🛒 Générateur de Liste de Courses Marmiton")
 st.markdown("Ajoutez des recettes Marmiton et générez automatiquement votre liste de courses !")
 
-# Initialisation de la session
-if 'recipes' not in st.session_state:
-    st.session_state.recipes = []
+# Onglets pour mode automatique et manuel
+tab1, tab2 = st.tabs(["📡 Extraction automatique", "✍️ Saisie manuelle"])
 
-# Section d'ajout de recette
-st.header("➕ Ajouter une recette")
-col1, col2 = st.columns([3, 1])
+with tab1:
+    st.header("➕ Ajouter une recette automatiquement")
+    col1, col2 = st.columns([3, 1])
 
-with col1:
-    recipe_url = st.text_input("URL de la recette Marmiton", placeholder="https://www.marmiton.org/recettes/...")
+    with col1:
+        recipe_url = st.text_input("URL de la recette Marmiton", placeholder="https://www.marmiton.org/recettes/...")
 
-with col2:
-    nb_persons = st.number_input("Nombre de personnes", min_value=1, max_value=50, value=4)
+    with col2:
+        nb_persons = st.number_input("Nombre de personnes", min_value=1, max_value=50, value=4, key="auto_persons")
 
-if st.button("Ajouter la recette", type="primary"):
-    if recipe_url:
-        with st.spinner("Extraction de la recette en cours..."):
-            recipe_data = extract_marmiton_recipe(recipe_url)
+    if st.button("Extraire la recette", type="primary"):
+        if recipe_url:
+            with st.spinner("Extraction de la recette en cours..."):
+                recipe_data = extract_marmiton_recipe(recipe_url)
+                
+                if recipe_data:
+                    st.info(f"📝 Titre: {recipe_data['title']}")
+                    st.info(f"👥 Pour {recipe_data['servings']} personnes (original)")
+                    st.info(f"🥘 {len(recipe_data['ingredients'])} ingrédients extraits")
+                    
+                    if recipe_data['ingredients']:
+                        with st.expander("Voir les ingrédients extraits"):
+                            for ing in recipe_data['ingredients']:
+                                st.write(f"- {ing}")
+                        
+                        if st.button("✅ Confirmer et ajouter cette recette"):
+                            st.session_state.recipes.append({
+                                'title': recipe_data['title'],
+                                'original_servings': recipe_data['servings'],
+                                'target_servings': nb_persons,
+                                'ingredients': recipe_data['ingredients'],
+                                'url': recipe_data['url']
+                            })
+                            st.success(f"✅ Recette ajoutée !")
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Aucun ingrédient extrait. Utilisez l'onglet 'Saisie manuelle' pour ajouter la recette.")
+        else:
+            st.warning("Veuillez entrer une URL de recette")
+
+with tab2:
+    st.header("✍️ Ajouter une recette manuellement")
+    
+    manual_title = st.text_input("Nom de la recette", key="manual_title")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        manual_servings = st.number_input("Nombre de personnes (original)", min_value=1, value=4, key="manual_orig")
+    with col2:
+        manual_target = st.number_input("Nombre de personnes (souhaité)", min_value=1, value=4, key="manual_target")
+    
+    manual_ingredients = st.text_area(
+        "Ingrédients (un par ligne)",
+        placeholder="200g de farine\n3 oeufs\n1 litre de lait\n...",
+        height=200,
+        key="manual_ingredients"
+    )
+    
+    if st.button("➕ Ajouter cette recette", type="primary", key="add_manual"):
+        if manual_title and manual_ingredients:
+            ingredients_list = [ing.strip() for ing in manual_ingredients.split('\n') if ing.strip()]
             
-            if recipe_data:
-                st.session_state.recipes.append({
-                    'title': recipe_data['title'],
-                    'original_servings': recipe_data['servings'],
-                    'target_servings': nb_persons,
-                    'ingredients': recipe_data['ingredients'],
-                    'url': recipe_data['url']
-                })
-                st.success(f"✅ Recette '{recipe_data['title']}' ajoutée avec {len(recipe_data['ingredients'])} ingrédients!")
-                
-                # Afficher les ingrédients extraits
-                if recipe_data['ingredients']:
-                    with st.expander("Voir les ingrédients extraits"):
-                        for ing in recipe_data['ingredients']:
-                            st.write(f"- {ing}")
-                
-                st.rerun()
-    else:
-        st.warning("Veuillez entrer une URL de recette")
+            st.session_state.recipes.append({
+                'title': manual_title,
+                'original_servings': manual_servings,
+                'target_servings': manual_target,
+                'ingredients': ingredients_list,
+                'url': 'Saisie manuelle'
+            })
+            st.success(f"✅ Recette '{manual_title}' ajoutée avec {len(ingredients_list)} ingrédients !")
+            st.rerun()
+        else:
+            st.warning("Veuillez remplir le titre et les ingrédients")
 
 # Affichage des recettes ajoutées
 if st.session_state.recipes:
@@ -257,8 +268,9 @@ if st.session_state.recipes:
     
     for idx, recipe in enumerate(st.session_state.recipes):
         with st.expander(f"{recipe['title']} - {recipe['target_servings']} personnes"):
-            st.write(f"**Nombre de personnes original :** {recipe['original_servings']}")
-            st.write(f"**Nombre de personnes souhaité :** {recipe['target_servings']}")
+            st.write(f"**Personnes (original) :** {recipe['original_servings']}")
+            st.write(f"**Personnes (souhaité) :** {recipe['target_servings']}")
+            st.write(f"**Source :** {recipe['url']}")
             st.write("**Ingrédients :**")
             for ing in recipe['ingredients']:
                 st.write(f"- {ing}")
@@ -270,13 +282,14 @@ if st.session_state.recipes:
     # Génération de la liste de courses
     st.header("🛍️ Liste de Courses")
     
-    if st.button("Générer la liste de courses", type="primary"):
+    if st.button("🎯 Générer la liste de courses", type="primary"):
         merged, non_quantified = merge_ingredients(st.session_state.recipes)
         
-        st.subheader("Ingrédients à acheter :")
+        st.subheader("📝 Ingrédients à acheter :")
         
         # Ingrédients avec quantités
         if merged:
+            st.write("**Avec quantités :**")
             for (name_lower, unit_lower), data in sorted(merged.items()):
                 qty_str = format_quantity(data['quantity'])
                 unit_display = f" {data['unit']}" if data['unit'] else ""
@@ -284,38 +297,43 @@ if st.session_state.recipes:
         
         # Ingrédients sans quantités
         if non_quantified:
-            st.subheader("Autres ingrédients (sans quantité précise) :")
-            for name, recipes in sorted(non_quantified.items()):
-                recipe_list = ", ".join(recipes)
-                st.write(f"- {name.capitalize()} _(de : {recipe_list})_")
+            st.write("")
+            st.write("**Autres ingrédients :**")
+            for name in sorted(non_quantified.keys()):
+                st.write(f"- {name.capitalize()}")
+        
+        if not merged and not non_quantified:
+            st.warning("⚠️ Aucun ingrédient à afficher. Vérifiez que vos recettes contiennent bien des ingrédients.")
         
         # Option de téléchargement
-        shopping_list_text = "LISTE DE COURSES\n" + "="*50 + "\n\n"
-        
-        if merged:
-            shopping_list_text += "INGRÉDIENTS AVEC QUANTITÉS :\n"
-            for (name_lower, unit_lower), data in sorted(merged.items()):
-                qty_str = format_quantity(data['quantity'])
-                unit_display = f" {data['unit']}" if data['unit'] else ""
-                shopping_list_text += f"- {qty_str}{unit_display} {data['name']}\n"
-        
-        if non_quantified:
-            shopping_list_text += "\nAUTRES INGRÉDIENTS :\n"
-            for name in sorted(non_quantified.keys()):
-                shopping_list_text += f"- {name.capitalize()}\n"
-        
-        st.download_button(
-            label="📥 Télécharger la liste",
-            data=shopping_list_text,
-            file_name="liste_courses.txt",
-            mime="text/plain"
-        )
+        if merged or non_quantified:
+            shopping_list_text = "LISTE DE COURSES\n" + "="*50 + "\n\n"
+            
+            if merged:
+                shopping_list_text += "INGRÉDIENTS AVEC QUANTITÉS :\n"
+                for (name_lower, unit_lower), data in sorted(merged.items()):
+                    qty_str = format_quantity(data['quantity'])
+                    unit_display = f" {data['unit']}" if data['unit'] else ""
+                    shopping_list_text += f"- {qty_str}{unit_display} {data['name']}\n"
+            
+            if non_quantified:
+                shopping_list_text += "\nAUTRES INGRÉDIENTS :\n"
+                for name in sorted(non_quantified.keys()):
+                    shopping_list_text += f"- {name.capitalize()}\n"
+            
+            st.download_button(
+                label="📥 Télécharger la liste",
+                data=shopping_list_text,
+                file_name="liste_courses.txt",
+                mime="text/plain"
+            )
 
 else:
     st.info("👆 Ajoutez votre première recette pour commencer !")
 
 # Bouton pour tout effacer
 if st.session_state.recipes:
-    if st.button("🗑️ Tout effacer"):
+    st.divider()
+    if st.button("🗑️ Tout effacer", type="secondary"):
         st.session_state.recipes = []
         st.rerun()
