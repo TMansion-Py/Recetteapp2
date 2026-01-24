@@ -485,13 +485,28 @@ if st.session_state.recipes:
         
         # Options de téléchargement
         if merged or non_quantified:
-            col_dl1, col_dl2 = st.columns(2)
+            st.divider()
+            
+            # Générer le texte de la liste
+            shopping_list_text = generate_shopping_list_text(st.session_state.recipes, merged, non_quantified)
+            
+            # Afficher le QR Code
+            st.subheader("📱 QR Code de votre liste")
+            st.write("Scannez ce QR code avec votre téléphone pour avoir la liste lors de vos courses !")
+            
+            qr_img = generate_qr_code(shopping_list_text)
+            st.image(qr_img, width=300)
+            
+            st.divider()
+            
+            # Boutons de téléchargement
+            col_dl1, col_dl2, col_dl3 = st.columns(3)
             
             with col_dl1:
                 # PDF
                 pdf_buffer = generate_pdf(st.session_state.recipes, merged, non_quantified)
                 st.download_button(
-                    label="📥 Télécharger en PDF",
+                    label="📥 Télécharger PDF",
                     data=pdf_buffer,
                     file_name="liste_courses.pdf",
                     mime="application/pdf",
@@ -500,34 +515,20 @@ if st.session_state.recipes:
             
             with col_dl2:
                 # TXT
-                shopping_list_text = "LISTE DE COURSES\n" + "="*50 + "\n\n"
-                shopping_list_text += "MES RECETTES :\n"
-                for idx, recipe in enumerate(st.session_state.recipes, 1):
-                    shopping_list_text += f"{idx}. {recipe['title']}\n"
-                    shopping_list_text += f"   Pour {recipe['target_servings']} personne(s)\n"
-                    if recipe['url'] != 'Saisie manuelle':
-                        shopping_list_text += f"   {recipe['url']}\n"
-                    shopping_list_text += "\n"
-                
-                shopping_list_text += "\n" + "="*50 + "\n\n"
-                
-                if merged:
-                    shopping_list_text += "INGRÉDIENTS AVEC QUANTITÉS :\n"
-                    for (name_lower, unit_lower), data in sorted(merged.items()):
-                        qty_str = format_quantity(data['quantity'])
-                        unit_display = f" {data['unit']}" if data['unit'] else ""
-                        shopping_list_text += f"- {qty_str}{unit_display} {data['name']}\n"
-                
-                if non_quantified:
-                    shopping_list_text += "\nAUTRES INGRÉDIENTS :\n"
-                    for name in sorted(non_quantified.keys()):
-                        shopping_list_text += f"- {name.capitalize()}\n"
-                
                 st.download_button(
-                    label="📥 Télécharger en TXT",
+                    label="📥 Télécharger TXT",
                     data=shopping_list_text,
                     file_name="liste_courses.txt",
                     mime="text/plain"
+                )
+            
+            with col_dl3:
+                # QR Code PNG
+                st.download_button(
+                    label="📥 Télécharger QR Code",
+                    data=qr_img,
+                    file_name="qrcode_liste_courses.png",
+                    mime="image/png"
                 )
 
 else:
