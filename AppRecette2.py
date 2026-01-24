@@ -246,6 +246,28 @@ def generate_pdf(recipes_data, merged, non_quantified):
     doc.build(story)
     buffer.seek(0)
     return buffer
+
+def merge_ingredients(recipes_data):
+    """Fusionne les ingrédients de plusieurs recettes"""
+    merged = defaultdict(lambda: defaultdict(float))
+    non_quantified = defaultdict(set)
+    
+    for recipe in recipes_data:
+        ratio = recipe['target_servings'] / recipe['original_servings']
+        
+        for ingredient in recipe['ingredients']:
+            qty, unit, name = parse_ingredient(ingredient, ratio)
+            name_lower = name.lower()
+            
+            if qty is not None:
+                key = (name_lower, unit.lower())
+                merged[key]['quantity'] += qty
+                merged[key]['name'] = name
+                merged[key]['unit'] = unit
+            else:
+                non_quantified[name_lower].add(recipe['title'])
+    
+    return merged, non_quantified
     """Fusionne les ingrédients de plusieurs recettes"""
     merged = defaultdict(lambda: defaultdict(float))
     non_quantified = defaultdict(set)
@@ -424,28 +446,52 @@ if st.session_state.recipes:
         if not merged and not non_quantified:
             st.warning("⚠️ Aucun ingrédient à afficher. Vérifiez que vos recettes contiennent bien des ingrédients.")
         
-        # Option de téléchargement
+        # Options de téléchargement
         if merged or non_quantified:
-            shopping_list_text = "LISTE DE COURSES\n" + "="*50 + "\n\n"
+            col_dl1, col_dl2 = st.columns(2)
             
-            if merged:
-                shopping_list_text += "INGRÉDIENTS AVEC QUANTITÉS :\n"
-                for (name_lower, unit_lower), data in sorted(merged.items()):
-                    qty_str = format_quantity(data['quantity'])
-                    unit_display = f" {data['unit']}" if data['unit'] else ""
-                    shopping_list_text += f"- {qty_str}{unit_display} {data['name']}\n"
+            with col_dl1:
+                # PDF
+                pdf_buffer = generate_pdf(st.session_state.recipes, merged, non_quantified)
+                st.download_button(
+                    label="📥 Télécharger en PDF",
+                    data=pdf_buffer,
+                    file_name="liste_courses.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
             
-            if non_quantified:
-                shopping_list_text += "\nAUTRES INGRÉDIENTS :\n"
-                for name in sorted(non_quantified.keys()):
-                    shopping_list_text += f"- {name.capitalize()}\n"
-            
-            st.download_button(
-                label="📥 Télécharger la liste",
-                data=shopping_list_text,
-                file_name="liste_courses.txt",
-                mime="text/plain"
-            )
+            with col_dl2:
+                # TXT
+                shopping_list_text = "LISTE DE COURSES\n" + "="*50 + "\n\n"
+                shopping_list_text += "MES RECETTES :\n"
+                for idx, recipe in enumerate(st.session_state.recipes, 1):
+                    shopping_list_text += f"{idx}. {recipe['title']}\n"
+                    shopping_list_text += f"   Pour {recipe['target_servings']} personne(s)\n"
+                    if recipe['url'] != 'Saisie manuelle':
+                        shopping_list_text += f"   {recipe['url']}\n"
+                    shopping_list_text += "\n"
+                
+                shopping_list_text += "\n" + "="*50 + "\n\n"
+                
+                if merged:
+                    shopping_list_text += "INGRÉDIENTS AVEC QUANTITÉS :\n"
+                    for (name_lower, unit_lower), data in sorted(merged.items()):
+                        qty_str = format_quantity(data['quantity'])
+                        unit_display = f" {data['unit']}" if data['unit'] else ""
+                        shopping_list_text += f"- {qty_str}{unit_display} {data['name']}\n"
+                
+                if non_quantified:
+                    shopping_list_text += "\nAUTRES INGRÉDIENTS :\n"
+                    for name in sorted(non_quantified.keys()):
+                        shopping_list_text += f"- {name.capitalize()}\n"
+                
+                st.download_button(
+                    label="📥 Télécharger en TXT",
+                    data=shopping_list_text,
+                    file_name="liste_courses.txt",
+                    mime="text/plain"
+                )
 
 else:
     st.info("👆 Ajoutez votre première recette pour commencer !")
