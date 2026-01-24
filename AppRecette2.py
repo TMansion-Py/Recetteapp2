@@ -5,6 +5,14 @@ import re
 from fractions import Fraction
 from collections import defaultdict
 import json
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 st.set_page_config(page_title="Liste de Courses Marmiton", page_icon="🛒", layout="wide")
 
@@ -153,7 +161,91 @@ def format_quantity(qty):
         return str(int(qty))
     return f"{qty:.1f}".rstrip('0').rstrip('.')
 
-def merge_ingredients(recipes_data):
+def generate_pdf(recipes_data, merged, non_quantified):
+    """Génère un PDF avec les recettes et la liste de courses"""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
+    
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor='#2E86AB',
+        spaceAfter=30,
+        alignment=TA_CENTER
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=16,
+        textColor='#A23B72',
+        spaceAfter=12,
+        spaceBefore=20
+    )
+    
+    normal_style = styles['Normal']
+    normal_style.fontSize = 11
+    normal_style.leading = 14
+    
+    # Construction du document
+    story = []
+    
+    # Titre principal
+    story.append(Paragraph("🛒 Ma Liste de Courses", title_style))
+    story.append(Spacer(1, 0.5*cm))
+    
+    # Section recettes
+    story.append(Paragraph("📋 Mes Recettes", heading_style))
+    
+    for idx, recipe in enumerate(recipes_data, 1):
+        recipe_title = f"{idx}. <b>{recipe['title']}</b>"
+        story.append(Paragraph(recipe_title, normal_style))
+        
+        persons_info = f"Pour {recipe['target_servings']} personne(s)"
+        if recipe['target_servings'] != recipe['original_servings']:
+            persons_info += f" (recette originale: {recipe['original_servings']} personne(s))"
+        story.append(Paragraph(persons_info, normal_style))
+        
+        if recipe['url'] != 'Saisie manuelle':
+            url_text = f"<link href='{recipe['url']}'>{recipe['url']}</link>"
+            story.append(Paragraph(url_text, normal_style))
+        
+        story.append(Spacer(1, 0.3*cm))
+    
+    story.append(Spacer(1, 0.5*cm))
+    
+    # Section liste de courses
+    story.append(Paragraph("🛍️ Liste de Courses", heading_style))
+    story.append(Spacer(1, 0.3*cm))
+    
+    # Ingrédients avec quantités
+    if merged:
+        story.append(Paragraph("<b>Ingrédients avec quantités :</b>", normal_style))
+        story.append(Spacer(1, 0.2*cm))
+        
+        for (name_lower, unit_lower), data in sorted(merged.items()):
+            qty_str = format_quantity(data['quantity'])
+            unit_display = f" {data['unit']}" if data['unit'] else ""
+            ingredient_text = f"• <b>{qty_str}{unit_display}</b> {data['name']}"
+            story.append(Paragraph(ingredient_text, normal_style))
+        
+        story.append(Spacer(1, 0.5*cm))
+    
+    # Ingrédients sans quantités
+    if non_quantified:
+        story.append(Paragraph("<b>Autres ingrédients :</b>", normal_style))
+        story.append(Spacer(1, 0.2*cm))
+        
+        for name in sorted(non_quantified.keys()):
+            story.append(Paragraph(f"• {name.capitalize()}", normal_style))
+    
+    # Génération du PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
     """Fusionne les ingrédients de plusieurs recettes"""
     merged = defaultdict(lambda: defaultdict(float))
     non_quantified = defaultdict(set)
