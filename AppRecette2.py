@@ -198,69 +198,96 @@ with tab1:
     with col2:
         nb_persons = st.number_input("Nombre de personnes", min_value=1, max_value=50, value=4, key="auto_persons")
 
-    if st.button("Extraire la recette", type="primary"):
+    if st.button("Extraire la recette", type="primary", key="extract_btn"):
         if recipe_url:
             with st.spinner("Extraction de la recette en cours..."):
                 recipe_data = extract_marmiton_recipe(recipe_url)
                 
                 if recipe_data:
-                    st.info(f"📝 Titre: {recipe_data['title']}")
-                    st.info(f"👥 Pour {recipe_data['servings']} personnes (original)")
-                    st.info(f"🥘 {len(recipe_data['ingredients'])} ingrédients extraits")
-                    
-                    if recipe_data['ingredients']:
-                        with st.expander("Voir les ingrédients extraits"):
-                            for ing in recipe_data['ingredients']:
-                                st.write(f"- {ing}")
-                        
-                        if st.button("✅ Confirmer et ajouter cette recette"):
-                            st.session_state.recipes.append({
-                                'title': recipe_data['title'],
-                                'original_servings': recipe_data['servings'],
-                                'target_servings': nb_persons,
-                                'ingredients': recipe_data['ingredients'],
-                                'url': recipe_data['url']
-                            })
-                            st.success(f"✅ Recette ajoutée !")
-                            st.rerun()
-                    else:
-                        st.warning("⚠️ Aucun ingrédient extrait. Utilisez l'onglet 'Saisie manuelle' pour ajouter la recette.")
+                    st.session_state.extracted_recipe = recipe_data
+                    st.session_state.target_persons = nb_persons
+                    st.rerun()
         else:
             st.warning("Veuillez entrer une URL de recette")
+    
+    # Afficher la recette extraite si elle existe
+    if 'extracted_recipe' in st.session_state and st.session_state.extracted_recipe:
+        recipe_data = st.session_state.extracted_recipe
+        
+        st.success("✅ Recette extraite avec succès !")
+        st.info(f"📝 Titre: {recipe_data['title']}")
+        st.info(f"👥 Pour {recipe_data['servings']} personnes (original)")
+        st.info(f"🥘 {len(recipe_data['ingredients'])} ingrédients extraits")
+        
+        if recipe_data['ingredients']:
+            with st.expander("Voir les ingrédients extraits", expanded=True):
+                for ing in recipe_data['ingredients']:
+                    st.write(f"- {ing}")
+            
+            col_a, col_b, col_c = st.columns([1, 1, 2])
+            with col_a:
+                if st.button("✅ Confirmer et ajouter", type="primary", key="confirm_btn"):
+                    st.session_state.recipes.append({
+                        'title': recipe_data['title'],
+                        'original_servings': recipe_data['servings'],
+                        'target_servings': st.session_state.target_persons,
+                        'ingredients': recipe_data['ingredients'],
+                        'url': recipe_data['url']
+                    })
+                    # Nettoyer la recette extraite
+                    del st.session_state.extracted_recipe
+                    if 'target_persons' in st.session_state:
+                        del st.session_state.target_persons
+                    st.success(f"✅ Recette ajoutée !")
+                    st.rerun()
+            
+            with col_b:
+                if st.button("❌ Annuler", key="cancel_btn"):
+                    del st.session_state.extracted_recipe
+                    if 'target_persons' in st.session_state:
+                        del st.session_state.target_persons
+                    st.rerun()
+        else:
+            st.warning("⚠️ Aucun ingrédient extrait. Utilisez l'onglet 'Saisie manuelle' pour ajouter la recette.")
+            if st.button("❌ Fermer", key="close_btn"):
+                del st.session_state.extracted_recipe
+                st.rerun()
 
 with tab2:
     st.header("✍️ Ajouter une recette manuellement")
     
-    manual_title = st.text_input("Nom de la recette", key="manual_title")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        manual_servings = st.number_input("Nombre de personnes (original)", min_value=1, value=4, key="manual_orig")
-    with col2:
-        manual_target = st.number_input("Nombre de personnes (souhaité)", min_value=1, value=4, key="manual_target")
-    
-    manual_ingredients = st.text_area(
-        "Ingrédients (un par ligne)",
-        placeholder="200g de farine\n3 oeufs\n1 litre de lait\n...",
-        height=200,
-        key="manual_ingredients"
-    )
-    
-    if st.button("➕ Ajouter cette recette", type="primary", key="add_manual"):
-        if manual_title and manual_ingredients:
-            ingredients_list = [ing.strip() for ing in manual_ingredients.split('\n') if ing.strip()]
-            
-            st.session_state.recipes.append({
-                'title': manual_title,
-                'original_servings': manual_servings,
-                'target_servings': manual_target,
-                'ingredients': ingredients_list,
-                'url': 'Saisie manuelle'
-            })
-            st.success(f"✅ Recette '{manual_title}' ajoutée avec {len(ingredients_list)} ingrédients !")
-            st.rerun()
-        else:
-            st.warning("Veuillez remplir le titre et les ingrédients")
+    with st.form("manual_recipe_form"):
+        manual_title = st.text_input("Nom de la recette")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            manual_servings = st.number_input("Nombre de personnes (original)", min_value=1, value=4)
+        with col2:
+            manual_target = st.number_input("Nombre de personnes (souhaité)", min_value=1, value=4)
+        
+        manual_ingredients = st.text_area(
+            "Ingrédients (un par ligne)",
+            placeholder="200g de farine\n3 oeufs\n1 litre de lait\n...",
+            height=200
+        )
+        
+        submitted = st.form_submit_button("➕ Ajouter cette recette", type="primary")
+        
+        if submitted:
+            if manual_title and manual_ingredients:
+                ingredients_list = [ing.strip() for ing in manual_ingredients.split('\n') if ing.strip()]
+                
+                st.session_state.recipes.append({
+                    'title': manual_title,
+                    'original_servings': manual_servings,
+                    'target_servings': manual_target,
+                    'ingredients': ingredients_list,
+                    'url': 'Saisie manuelle'
+                })
+                st.success(f"✅ Recette '{manual_title}' ajoutée avec {len(ingredients_list)} ingrédients !")
+                st.rerun()
+            else:
+                st.warning("Veuillez remplir le titre et les ingrédients")
 
 # Affichage des recettes ajoutées
 if st.session_state.recipes:
